@@ -68,8 +68,8 @@ class Config:
                 "No youtube API key found and channel whitelist is not empty"
             )
         if not self.skip_categories:
-            self.skip_categories = ["sponsor"]
-            print("No categories found, using default: sponsor")
+            print("No categories found, won't use SponsorBlock.")
+            self.skip_categories = []
 
     def __load(self):
         try:

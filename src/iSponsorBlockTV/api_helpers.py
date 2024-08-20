@@ -116,6 +116,9 @@ class ApiHelper:
         time_to_live=300, maxsize=10
     )  # 5 minutes for non-locked segments
     async def get_segments(self, vid_id):
+        if not self.skip_categories:
+            return ([], False)  # Don't send it at all if there's no categories
+        
         if await self.is_whitelisted(vid_id):
             return (
                 [],
