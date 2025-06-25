@@ -6,15 +6,12 @@ from . import api_helpers, ytlounge
 
 # Constants for user input prompts
 ATVS_REMOVAL_PROMPT = (
-    "Do you want to remove the legacy 'atvs' entry (the app won't start"
-    " with it present)? (y/N) "
+    "Do you want to remove the legacy 'atvs' entry (the app won't start with it present)? (y/N) "
 )
 PAIRING_CODE_PROMPT = "Enter pairing code (found in Settings - Link with TV code): "
 ADD_MORE_DEVICES_PROMPT = "Paired with {num_devices} Device(s). Add more? (y/N) "
 CHANGE_API_KEY_PROMPT = "API key already specified. Change it? (y/N) "
-ADD_API_KEY_PROMPT = (
-    "API key only needed for the channel whitelist function. Add it? (y/N) "
-)
+ADD_API_KEY_PROMPT = "API key only needed for the channel whitelist function. Add it? (y/N) "
 ENTER_API_KEY_PROMPT = "Enter your API key: "
 CHANGE_SKIP_CATEGORIES_PROMPT = "Skip categories already specified. Change them? (y/N) "
 ENTER_SKIP_CATEGORIES_PROMPT = (
@@ -22,13 +19,15 @@ ENTER_SKIP_CATEGORIES_PROMPT = (
     " selfpromo, exclusive_access, interaction, poi_highlight, intro, outro,"
     " preview, filler, music_offtopic]:\n"
 )
-WHITELIST_CHANNELS_PROMPT = (
-    "Do you want to whitelist any channels from being ad-blocked? (y/N) "
-)
+WHITELIST_CHANNELS_PROMPT = "Do you want to whitelist any channels from being ad-blocked? (y/N) "
 SEARCH_CHANNEL_PROMPT = 'Enter a channel name or "/exit" to exit: '
 SELECT_CHANNEL_PROMPT = "Select one option of the above [0-6]: "
 ENTER_CHANNEL_ID_PROMPT = "Enter a channel ID: "
 ENTER_CUSTOM_CHANNEL_NAME_PROMPT = "Enter the channel name: "
+MINIMUM_SKIP_PROMPT = "Do you want to specify a minimum length of segment to skip? (y/N)"
+MINIMUM_SKIP_SPECIFICATION_PROMPT = (
+    "Enter minimum length of segment to skip in seconds (enter 0 to disable):"
+)
 REPORT_SKIPPED_SEGMENTS_PROMPT = (
     "Do you want to report skipped segments to sponsorblock. Only the segment"
     " UUID will be sent? (Y/n) "
@@ -43,11 +42,17 @@ def get_yn_input(prompt):
         if choice.lower() in ["y", "n"]:
             return choice.lower()
         print("Invalid input. Please enter 'y' or 'n'.")
+    return None
 
 
-async def pair_device():
+async def create_web_session():
+    return aiohttp.ClientSession()
+
+
+async def pair_device(web_session: aiohttp.ClientSession):
     try:
-        lounge_controller = ytlounge.YtLoungeApi("iSponsorBlockTV")
+        lounge_controller = ytlounge.YtLoungeApi()
+        await lounge_controller.change_web_session(web_session)
         pairing_code = input(PAIRING_CODE_PROMPT)
         pairing_code = int(
             pairing_code.replace("-", "").replace(" ", "")
@@ -71,7 +76,7 @@ async def pair_device():
 def main(config, debug: bool) -> None:
     print("Welcome to the iSponsorBlockTV cli setup wizard")
     loop = asyncio.get_event_loop_policy().get_event_loop()
-    web_session = aiohttp.ClientSession()
+    web_session = loop.run_until_complete(create_web_session())
     if debug:
         loop.set_debug(True)
     asyncio.set_event_loop(loop)
@@ -88,9 +93,7 @@ def main(config, debug: bool) -> None:
     devices = config.devices
     choice = get_yn_input(ADD_MORE_DEVICES_PROMPT.format(num_devices=len(devices)))
     while choice == "y":
-        task = loop.create_task(pair_device())
-        loop.run_until_complete(task)
-        device = task.result()
+        device = loop.run_until_complete(pair_device(web_session))
         if device:
             devices.append(device)
         choice = get_yn_input(ADD_MORE_DEVICES_PROMPT.format(num_devices=len(devices)))
@@ -117,15 +120,11 @@ def main(config, debug: bool) -> None:
         if choice == "y":
             categories = input(ENTER_SKIP_CATEGORIES_PROMPT)
             skip_categories = categories.replace(",", " ").split(" ")
-            skip_categories = [
-                x for x in skip_categories if x != ""
-            ]  # Remove empty strings
+            skip_categories = [x for x in skip_categories if x != ""]  # Remove empty strings
     else:
         categories = input(ENTER_SKIP_CATEGORIES_PROMPT)
         skip_categories = categories.replace(",", " ").split(" ")
-        skip_categories = [
-            x for x in skip_categories if x != ""
-        ]  # Remove empty strings
+        skip_categories = [x for x in skip_categories if x != ""]  # Remove empty strings
     config.skip_categories = skip_categories
 
     channel_whitelist = config.channel_whitelist
@@ -144,9 +143,7 @@ def main(config, debug: bool) -> None:
             if channel == "/exit":
                 break
 
-            task = loop.create_task(
-                api_helper.search_channels(channel, apikey, web_session)
-            )
+            task = loop.create_task(api_helper.search_channels(channel, apikey, web_session))
             loop.run_until_complete(task)
             results = task.result()
             if len(results) == 0:
@@ -177,6 +174,21 @@ def main(config, debug: bool) -> None:
         # Close web session asynchronously
 
     config.channel_whitelist = channel_whitelist
+
+    # Ask for minimum skip length. Confirm input is an integer
+    minimum_skip_length = config.minimum_skip_length
+
+    choice = get_yn_input(MINIMUM_SKIP_PROMPT)
+    if choice == "y":
+        while True:
+            try:
+                minimum_skip_length = int(input(MINIMUM_SKIP_SPECIFICATION_PROMPT))
+                break
+            except ValueError:
+                print("You entered a non integer value, try again.")
+                continue
+
+    config.minimum_skip_length = minimum_skip_length
 
     choice = get_yn_input(REPORT_SKIPPED_SEGMENTS_PROMPT)
     config.skip_count_tracking = choice != "n"

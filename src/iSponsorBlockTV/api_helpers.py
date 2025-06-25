@@ -27,6 +27,7 @@ class ApiHelper:
         self.skip_count_tracking = config.skip_count_tracking
         self.web_session = web_session
         self.num_devices = len(config.devices)
+        self.minimum_skip_length = config.minimum_skip_length
 
     # Not used anymore, maybe it can stay here a little longer
     @AsyncLRU(maxsize=10)
@@ -101,20 +102,14 @@ class ApiHelper:
             if channel_data["items"][0]["statistics"]["hiddenSubscriberCount"]:
                 sub_count = "Hidden"
             else:
-                sub_count = int(
-                    channel_data["items"][0]["statistics"]["subscriberCount"]
-                )
+                sub_count = int(channel_data["items"][0]["statistics"]["subscriberCount"])
                 sub_count = format(sub_count, "_")
 
-            channels.append(
-                (i["snippet"]["channelId"], i["snippet"]["channelTitle"], sub_count)
-            )
+            channels.append((i["snippet"]["channelId"], i["snippet"]["channelTitle"], sub_count))
         return channels
 
     @list_to_tuple  # Convert list to tuple so it can be used as a key in the cache
-    @AsyncConditionalTTL(
-        time_to_live=300, maxsize=10
-    )  # 5 minutes for non-locked segments
+    @AsyncConditionalTTL(time_to_live=300, maxsize=10)  # 5 minutes for non-locked segments
     async def get_segments(self, vid_id):
         if not self.skip_categories:
             return ([], False)  # Don't send it at all if there's no categories
@@ -123,7 +118,8 @@ class ApiHelper:
             return (
                 [],
                 True,
-            )  # Return empty list and True to indicate that the cache should last forever
+            )  # Return empty list and True to indicate
+            # that the cache should last forever
         vid_id_hashed = sha256(vid_id.encode("utf-8")).hexdigest()[
             :4
         ]  # Hashes video id and gets the first 4 characters
@@ -134,9 +130,7 @@ class ApiHelper:
         }
         headers = {"Accept": "application/json"}
         url = constants.SponsorBlock_api + "skipSegments/" + vid_id_hashed
-        async with self.web_session.get(
-            url, headers=headers, params=params
-        ) as response:
+        async with self.web_session.get(url, headers=headers, params=params) as response:
             response_json = await response.json()
         if response.status != 200:
             response_text = await response.text()
@@ -149,10 +143,10 @@ class ApiHelper:
             if str(i["videoID"]) == str(vid_id):
                 response_json = i
                 break
-        return self.process_segments(response_json)
+        return self.process_segments(response_json, self.minimum_skip_length)
 
     @staticmethod
-    def process_segments(response):
+    def process_segments(response, minimum_skip_length):
         segments = []
         ignore_ttl = True
         try:
@@ -186,7 +180,7 @@ class ApiHelper:
                     segment_before_start = segments[-1]["start"]
                     segment_before_UUID = segments[-1]["UUID"]
 
-                except Exception:
+                except IndexError:
                     segment_before_end = -10
                 if (
                     segment_dict["start"] - segment_before_end < 1
@@ -194,13 +188,16 @@ class ApiHelper:
                     segment_dict["start"] = segment_before_start
                     segment_dict["UUID"].extend(segment_before_UUID)
                     segments.pop()
-                segments.append(segment_dict)
-        except Exception:
+                # Only add segments greater than minimum skip length
+                if segment_dict["end"] - segment_dict["start"] > minimum_skip_length:
+                    segments.append(segment_dict)
+        except BaseException:
             pass
         return segments, ignore_ttl
 
     async def mark_viewed_segments(self, uuids):
-        """Marks the segments as viewed in the SponsorBlock API, if skip_count_tracking is enabled.
+        """Marks the segments as viewed in the SponsorBlock API
+        if skip_count_tracking is enabled.
         Lets the contributor know that someone skipped the segment (thanks)"""
         if self.skip_count_tracking:
             for i in uuids:

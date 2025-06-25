@@ -8,7 +8,7 @@ import rich_click as click
 from appdirs import user_data_dir
 
 from . import config_setup, main, setup_wizard
-from .constants import config_file_blacklist_keys
+from .constants import config_file_blacklist_keys, github_wiki_base_url
 
 
 class Device:
@@ -41,7 +41,9 @@ class Config:
         self.skip_count_tracking = True
         self.mute_ads = False
         self.skip_ads = False
+        self.minimum_skip_length = 1
         self.auto_play = True
+        self.join_name = "iSponsorBlockTV"
         self.__load()
 
     def validate(self):
@@ -50,8 +52,8 @@ class Config:
                 (
                     "The atvs config option is deprecated and has stopped working."
                     " Please read this for more information "
-                    "on how to upgrade to V2:"
-                    " \nhttps://github.com/dmunozv04/iSponsorBlockTV/wiki/Migrate-from-V1-to-V2"
+                    "on how to upgrade to V2:\n"
+                    f"{github_wiki_base_url}/Migrate-from-V1-to-V2"
                 ),
             )
             print("Exiting in 10 seconds...")
@@ -64,9 +66,7 @@ class Config:
             sys.exit()
         self.devices = [Device(i) for i in self.devices]
         if not self.apikey and self.channel_whitelist:
-            raise ValueError(
-                "No youtube API key found and channel whitelist is not empty"
-            )
+            raise ValueError("No youtube API key found and channel whitelist is not empty")
         if not self.skip_categories:
             print("No categories found, won't use SponsorBlock.")
             self.skip_categories = []
@@ -89,18 +89,12 @@ class Config:
                     print(
                         "Running in docker without mounting the data dir, check the"
                         " wiki for more information: "
-                        "https://github.com/dmunozv04/iSponsorBlockTV/wiki/Installation#Docker"
+                        f"{github_wiki_base_url}/Installation#Docker"
                     )
                     print(
-                        (
-                            "This image has recently been updated to v2, and requires"
-                            " changes."
-                        ),
-                        (
-                            "Please read this for more information on how to upgrade"
-                            " to V2:"
-                        ),
-                        "https://github.com/dmunozv04/iSponsorBlockTV/wiki/Migrate-from-V1-to-V2",
+                        ("This image has recently been updated to v2, and requires changes."),
+                        ("Please read this for more information on how to upgrade to V2:"),
+                        f"{github_wiki_base_url}/Migrate-from-V1-to-V2",
                     )
                     print("Exiting in 10 seconds...")
                     time.sleep(10)
@@ -125,20 +119,21 @@ class Config:
             return self.__dict__ == other.__dict__
         return False
 
+    def __hash__(self):
+        return hash(tuple(sorted(self.items())))
+
 
 @click.group(invoke_without_command=True)
 @click.option(
     "--data",
     "-d",
-    default=lambda: os.getenv("iSPBTV_data_dir")
-    or user_data_dir("iSponsorBlockTV", "dmunozv04"),
+    default=lambda: os.getenv("iSPBTV_data_dir") or user_data_dir("iSponsorBlockTV", "dmunozv04"),
     help="data directory",
 )
 @click.option("--debug", is_flag=True, help="debug mode")
+@click.option("--http-tracing", is_flag=True, help="Enable HTTP request/response tracing")
 # legacy commands as arguments
-@click.option(
-    "--setup", is_flag=True, help="Setup the program graphically", hidden=True
-)
+@click.option("--setup", is_flag=True, help="Setup the program graphically", hidden=True)
 @click.option(
     "--setup-cli",
     is_flag=True,
@@ -146,13 +141,24 @@ class Config:
     hidden=True,
 )
 @click.pass_context
-def cli(ctx, data, debug, setup, setup_cli):
+def cli(ctx, data, debug, http_tracing, setup, setup_cli):
     """iSponsorblockTV"""
     ctx.ensure_object(dict)
     ctx.obj["data_dir"] = data
     ctx.obj["debug"] = debug
+    ctx.obj["http_tracing"] = http_tracing
+
+    logger = logging.getLogger()
+    ctx.obj["logger"] = logger
+    sh = logging.StreamHandler()
+    sh.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    logger.addHandler(sh)
+
     if debug:
-        logging.basicConfig(level=logging.DEBUG)
+        logger.setLevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.INFO)
+
     if ctx.invoked_subcommand is None:
         if setup:
             ctx.invoke(setup_command)
@@ -162,27 +168,21 @@ def cli(ctx, data, debug, setup, setup_cli):
             ctx.invoke(start)
 
 
-@cli.command()
+@cli.command(name="setup")
 @click.pass_context
-def setup(ctx):
+def setup_command(ctx):
     """Setup the program graphically"""
     config = Config(ctx.obj["data_dir"])
     setup_wizard.main(config)
     sys.exit()
 
 
-setup_command = setup
-
-
-@cli.command()
+@cli.command(name="setup-cli")
 @click.pass_context
-def setup_cli(ctx):
+def setup_cli_command(ctx):
     """Setup the program in the command line"""
     config = Config(ctx.obj["data_dir"])
     config_setup.main(config, ctx.obj["debug"])
-
-
-setup_cli_command = setup_cli
 
 
 @cli.command()
@@ -191,7 +191,7 @@ def start(ctx):
     """Start the main program"""
     config = Config(ctx.obj["data_dir"])
     config.validate()
-    main.main(config, ctx.obj["debug"])
+    main.main(config, ctx.obj["debug"], ctx.obj["http_tracing"])
 
 
 # Create fake "self" group to show pyapp options in help menu
@@ -201,9 +201,7 @@ pyapp_group.add_command(
     click.RichCommand("update", help="Update the package to the latest version")
 )
 pyapp_group.add_command(
-    click.Command(
-        "remove", help="Remove the package, wiping the installation but not the data"
-    )
+    click.Command("remove", help="Remove the package, wiping the installation but not the data")
 )
 pyapp_group.add_command(
     click.RichCommand(
