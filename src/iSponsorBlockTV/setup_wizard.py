@@ -13,6 +13,7 @@ from textual.containers import (
     ScrollableContainer,
     Vertical,
 )
+from textual.css.query import NoMatches
 from textual.events import Click
 from textual.screen import Screen
 from textual.validation import Function
@@ -233,7 +234,7 @@ class AddDevice(ModalWithClickExit):
     def __init__(self, config, **kwargs) -> None:
         super().__init__(**kwargs)
         self.config = config
-        self.web_session = aiohttp.ClientSession()
+        self.web_session = aiohttp.ClientSession(trust_env=config.use_proxy)
         self.api_helper = api_helpers.ApiHelper(config, self.web_session)
         self.devices_discovered_dial = []
 
@@ -301,7 +302,11 @@ class AddDevice(ModalWithClickExit):
 
     async def task_discover_devices(self):
         devices_found = await self.api_helper.discover_youtube_devices_dial()
-        list_widget: SelectionList = self.query_one("#dial-devices-list")
+        try:
+            list_widget: SelectionList = self.query_one("#dial-devices-list")
+        except NoMatches:
+            # The widget was not found, probably the screen was dismissed
+            return
         list_widget.clear_options()
         if devices_found:
             # print(devices_found)
@@ -336,7 +341,7 @@ class AddDevice(ModalWithClickExit):
         pairing_code = int(
             pairing_code.replace("-", "").replace(" ", "")
         )  # remove dashes and spaces
-        device_name = self.parent.query_one("#device-name-input").value
+        device_name = self.query_one("#device-name-input").value
         paired = False
         try:
             paired = await lounge_controller.pair(pairing_code)
@@ -382,7 +387,7 @@ class AddChannel(ModalWithClickExit):
     def __init__(self, config, **kwargs) -> None:
         super().__init__(**kwargs)
         self.config = config
-        web_session = aiohttp.ClientSession()
+        web_session = aiohttp.ClientSession(trust_env=config.use_proxy)
         self.api_helper = api_helpers.ApiHelper(config, web_session)
 
     def compose(self) -> ComposeResult:
@@ -659,7 +664,7 @@ class ApiKeyManager(Vertical):
 
     @on(Button.Pressed, "#api-key-view")
     def pressed_api_key_view(self, event: Button.Pressed):
-        if "Show" in event.button.label:
+        if "Show" in str(event.button.label):
             event.button.label = "Hide key"
             self.query_one("#api-key-input").password = False
         else:
@@ -820,10 +825,7 @@ class ChannelWhitelistManager(Vertical):
             id="channel-whitelist-subtitle",
         )
         yield Label(
-            (
-                ":warning: [#FF0000]You need to set your YouTube Api Key in order to"
-                " use this feature"
-            ),
+            ("⚠️ [#FF0000]You need to set your YouTube Api Key in order to use this feature"),
             id="warning-no-key",
         )
         with Horizontal(id="add-channel-button-container"):
@@ -890,11 +892,45 @@ class AutoPlayManager(Vertical):
         self.config.auto_play = event.checkbox.value
 
 
-class ISponsorBlockTVSetupMainScreen(Screen):
+class UseProxyManager(Vertical):
+    """Manager for proxy use, allows enabling/disabling use of proxy."""
+
+    def __init__(self, config, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.config = config
+
+    def compose(self) -> ComposeResult:
+        yield Label("Use proxy", classes="title")
+        yield Label(
+            "This feature allows application to use system proxy,"
+            " if it is set in environment variables."
+            " This parameter will be passed in all [i]aiohttp.ClientSession[/i]"
+            ' calls. For further information, see "[i]trust_env[/i]" section at'
+            " [link='https://docs.aiohttp.org/en/stable/client_reference.html']"
+            "aiohttp documentation[/link].",
+            classes="subtitle",
+            id="useproxy-subtitle",
+        )
+        with Horizontal(id="useproxy-container"):
+            yield Checkbox(
+                value=self.config.use_proxy,
+                id="useproxy-switch",
+                label="Use proxy",
+            )
+
+    @on(Checkbox.Changed, "#useproxy-switch")
+    def changed_skip(self, event: Checkbox.Changed):
+        self.config.use_proxy = event.checkbox.value
+
+
+class ISponsorBlockTVSetup(App):
     TITLE = "iSponsorBlockTV"
     SUB_TITLE = "Setup Wizard"
     BINDINGS = [("q,ctrl+c", "exit_modal", "Exit"), ("s", "save", "Save")]
     AUTO_FOCUS = None
+    CSS_PATH = (  # tcss is the recommended extension for textual css files
+        "setup-wizard-style.tcss"
+    )
 
     def __init__(self, config, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -926,6 +962,7 @@ class ISponsorBlockTVSetupMainScreen(Screen):
             )
             yield ApiKeyManager(config=self.config, id="api-key-manager", classes="container")
             yield AutoPlayManager(config=self.config, id="autoplay-manager", classes="container")
+            yield UseProxyManager(config=self.config, id="useproxy-manager", classes="container")
 
     def on_mount(self) -> None:
         if self.check_for_old_config_entries():
@@ -949,34 +986,11 @@ class ISponsorBlockTVSetupMainScreen(Screen):
     @on(Input.Changed, "#api-key-input")
     def changed_api_key(self, event: Input.Changed):
         try:  # ChannelWhitelist might not be mounted
-            # Show if no api key is set and at least one channel is in the whitelist
-            self.app.query_one("#warning-no-key").display = (
-                not event.input.value
-            ) and self.config.channel_whitelist
-        except BaseException:
+            self.app.query_one("#warning-no-key").display = bool(
+                (not event.input.value) and self.config.channel_whitelist
+            )
+        except NoMatches:
             pass
-
-
-class ISponsorBlockTVSetup(App):
-    CSS_PATH = (  # tcss is the recommended extension for textual css files
-        "setup-wizard-style.tcss"
-    )
-    # Bindings for the whole app here, so they are available in all screens
-    BINDINGS = [("q,ctrl+c", "exit_modal", "Exit"), ("s", "save", "Save")]
-
-    def __init__(self, config, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.config = config
-        self.main_screen = ISponsorBlockTVSetupMainScreen(config=self.config)
-
-    def on_mount(self) -> None:
-        self.push_screen(self.main_screen)
-
-    def action_save(self) -> None:
-        self.main_screen.action_save()
-
-    def action_exit_modal(self) -> None:
-        self.main_screen.action_exit_modal()
 
 
 def main(config):
